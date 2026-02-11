@@ -42,7 +42,16 @@ jobs:
             git checkout "$BRANCH"
             git pull origin "$BRANCH" --ff-only
 
-            docker compose -f "$COMPOSE_FILE" pull
-            docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
+            if docker compose version >/dev/null 2>&1; then
+              compose() { docker compose "$@"; }
+            elif command -v docker-compose >/dev/null 2>&1; then
+              compose() { docker-compose "$@"; }
+            else
+              echo "No docker compose command found. Install Docker Compose plugin or docker-compose."
+              exit 1
+            fi
+
+            compose -f "$COMPOSE_FILE" pull
+            compose -f "$COMPOSE_FILE" up -d --remove-orphans
 
             docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
