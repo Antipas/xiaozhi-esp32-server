@@ -1,0 +1,48 @@
+name: Deploy Server
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            DEPLOY_PATH="${{ secrets.DEPLOY_PATH }}"
+            COMPOSE_FILE="${{ secrets.DOCKER_COMPOSE_FILE }}"
+            BRANCH="${{ github.ref_name }}"
+
+            if [ -z "$DEPLOY_PATH" ]; then
+              echo "DEPLOY_PATH is empty."
+              exit 1
+            fi
+
+            if [ -z "$COMPOSE_FILE" ]; then
+              COMPOSE_FILE="main/xiaozhi-server/docker-compose_all.yml"
+            fi
+
+            cd "$DEPLOY_PATH"
+            git fetch --all --prune
+            git checkout "$BRANCH"
+            git pull origin "$BRANCH" --ff-only
+
+            docker compose -f "$COMPOSE_FILE" pull
+            docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
+
+            docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
