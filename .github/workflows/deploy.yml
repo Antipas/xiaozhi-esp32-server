@@ -22,7 +22,7 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script_stop: true
           script: |
-            set -euo pipefail
+            set -eu
 
             DEPLOY_PATH="${{ secrets.DEPLOY_PATH }}"
             COMPOSE_FILE="${{ secrets.DOCKER_COMPOSE_FILE }}"
@@ -35,36 +35,26 @@ jobs:
 
             cd "$DEPLOY_PATH"
 
-            resolve_compose_file() {
-              local candidates=(
-                "main/xiaozhi-server/docker-compose_all.yml"
-                "main/xiaozhi-server/docker-compose.yml"
-                "docker-compose_all.yml"
-                "docker-compose.yml"
-              )
-
-              if [ -n "$COMPOSE_FILE" ]; then
-                if [ -f "$COMPOSE_FILE" ]; then
-                  return 0
-                fi
-                echo "Configured DOCKER_COMPOSE_FILE not found: $COMPOSE_FILE"
-              fi
-
-              for f in "${candidates[@]}"; do
-                if [ -f "$f" ]; then
-                  COMPOSE_FILE="$f"
-                  return 0
-                fi
-              done
-
+            if [ -n "$COMPOSE_FILE" ] && [ -f "$COMPOSE_FILE" ]; then
+              :
+            elif [ -f "main/xiaozhi-server/docker-compose_all.yml" ]; then
+              COMPOSE_FILE="main/xiaozhi-server/docker-compose_all.yml"
+            elif [ -f "main/xiaozhi-server/docker-compose.yml" ]; then
+              COMPOSE_FILE="main/xiaozhi-server/docker-compose.yml"
+            elif [ -f "docker-compose_all.yml" ]; then
+              COMPOSE_FILE="docker-compose_all.yml"
+            elif [ -f "docker-compose.yml" ]; then
+              COMPOSE_FILE="docker-compose.yml"
+            else
               echo "No compose file found. Tried:"
-              for f in "${candidates[@]}"; do
-                echo " - $f"
-              done
-              return 1
-            }
+              echo " - $COMPOSE_FILE"
+              echo " - main/xiaozhi-server/docker-compose_all.yml"
+              echo " - main/xiaozhi-server/docker-compose.yml"
+              echo " - docker-compose_all.yml"
+              echo " - docker-compose.yml"
+              exit 1
+            fi
 
-            resolve_compose_file
             echo "Using compose file: $COMPOSE_FILE"
             ls -l "$COMPOSE_FILE"
 
@@ -73,15 +63,14 @@ jobs:
             git pull origin "$BRANCH" --ff-only
 
             if docker compose version >/dev/null 2>&1; then
-              compose() { docker compose "$@"; }
+              docker compose -f "$COMPOSE_FILE" pull
+              docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
             elif command -v docker-compose >/dev/null 2>&1; then
-              compose() { docker-compose "$@"; }
+              docker-compose -f "$COMPOSE_FILE" pull
+              docker-compose -f "$COMPOSE_FILE" up -d --remove-orphans
             else
               echo "No docker compose command found. Install Docker Compose plugin or docker-compose."
               exit 1
             fi
-
-            compose -f "$COMPOSE_FILE" pull
-            compose -f "$COMPOSE_FILE" up -d --remove-orphans
 
             docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
