@@ -33,11 +33,41 @@ jobs:
               exit 1
             fi
 
-            if [ -z "$COMPOSE_FILE" ]; then
-              COMPOSE_FILE="main/xiaozhi-server/docker-compose_all.yml"
-            fi
-
             cd "$DEPLOY_PATH"
+
+            resolve_compose_file() {
+              local candidates=(
+                "main/xiaozhi-server/docker-compose_all.yml"
+                "main/xiaozhi-server/docker-compose.yml"
+                "docker-compose_all.yml"
+                "docker-compose.yml"
+              )
+
+              if [ -n "$COMPOSE_FILE" ]; then
+                if [ -f "$COMPOSE_FILE" ]; then
+                  return 0
+                fi
+                echo "Configured DOCKER_COMPOSE_FILE not found: $COMPOSE_FILE"
+              fi
+
+              for f in "${candidates[@]}"; do
+                if [ -f "$f" ]; then
+                  COMPOSE_FILE="$f"
+                  return 0
+                fi
+              done
+
+              echo "No compose file found. Tried:"
+              for f in "${candidates[@]}"; do
+                echo " - $f"
+              done
+              return 1
+            }
+
+            resolve_compose_file
+            echo "Using compose file: $COMPOSE_FILE"
+            ls -l "$COMPOSE_FILE"
+
             git fetch --all --prune
             git checkout "$BRANCH"
             git pull origin "$BRANCH" --ff-only
