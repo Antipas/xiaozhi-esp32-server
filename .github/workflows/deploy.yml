@@ -13,7 +13,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
@@ -21,13 +21,14 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          command_timeout: 50m
+          command_timeout: 110m
           script_stop: true
           script: |
             set -eu
 
             DEPLOY_PATH="${{ secrets.DEPLOY_PATH }}"
             COMPOSE_FILE="${{ secrets.DOCKER_COMPOSE_FILE }}"
+            PULL_POLICY="${{ secrets.DEPLOY_PULL_POLICY }}"
             BRANCH="${{ github.ref_name }}"
 
             if [ -z "$DEPLOY_PATH" ]; then
@@ -60,14 +61,25 @@ jobs:
             echo "Using compose file: $COMPOSE_FILE"
             ls -l "$COMPOSE_FILE"
 
+            if [ -z "$PULL_POLICY" ]; then
+              PULL_POLICY="missing"
+            fi
+            echo "Image pull policy: $PULL_POLICY"
+
             git fetch --all --prune
             git checkout "$BRANCH"
             git pull origin "$BRANCH" --ff-only
 
             if docker compose version >/dev/null 2>&1; then
-              docker compose -f "$COMPOSE_FILE" up -d --remove-orphans --pull always
+              if [ "$PULL_POLICY" = "never" ]; then
+                docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
+              else
+                docker compose -f "$COMPOSE_FILE" up -d --remove-orphans --pull "$PULL_POLICY"
+              fi
             elif command -v docker-compose >/dev/null 2>&1; then
-              docker-compose -f "$COMPOSE_FILE" pull
+              if [ "$PULL_POLICY" = "always" ]; then
+                docker-compose -f "$COMPOSE_FILE" pull
+              fi
               docker-compose -f "$COMPOSE_FILE" up -d --remove-orphans
             else
               echo "No docker compose command found. Install Docker Compose plugin or docker-compose."
