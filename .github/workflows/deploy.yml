@@ -29,6 +29,7 @@ jobs:
             DEPLOY_PATH="${{ secrets.DEPLOY_PATH }}"
             COMPOSE_FILE="${{ secrets.DOCKER_COMPOSE_FILE }}"
             PULL_POLICY="${{ secrets.DEPLOY_PULL_POLICY }}"
+            DEPLOY_ASYNC="${{ secrets.DEPLOY_ASYNC }}"
             BRANCH="${{ github.ref_name }}"
 
             if [ -z "$DEPLOY_PATH" ]; then
@@ -66,24 +67,55 @@ jobs:
             fi
             echo "Image pull policy: $PULL_POLICY"
 
+            if [ -z "$DEPLOY_ASYNC" ]; then
+              DEPLOY_ASYNC="true"
+            fi
+            echo "Async deploy: $DEPLOY_ASYNC"
+
             git fetch --all --prune
             git checkout "$BRANCH"
             git pull origin "$BRANCH" --ff-only
 
             if docker compose version >/dev/null 2>&1; then
-              if [ "$PULL_POLICY" = "never" ]; then
-                docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
-              else
-                docker compose -f "$COMPOSE_FILE" up -d --remove-orphans --pull "$PULL_POLICY"
-              fi
+              USE_DOCKER_COMPOSE_PLUGIN="1"
             elif command -v docker-compose >/dev/null 2>&1; then
-              if [ "$PULL_POLICY" = "always" ]; then
-                docker-compose -f "$COMPOSE_FILE" pull
-              fi
-              docker-compose -f "$COMPOSE_FILE" up -d --remove-orphans
+              USE_DOCKER_COMPOSE_PLUGIN="0"
             else
               echo "No docker compose command found. Install Docker Compose plugin or docker-compose."
               exit 1
             fi
 
+            export DEPLOY_PATH COMPOSE_FILE PULL_POLICY USE_DOCKER_COMPOSE_PLUGIN
+            DEPLOY_RUN_SCRIPT="$DEPLOY_PATH/.deploy_run.sh"
+            cat > "$DEPLOY_RUN_SCRIPT" <<'EOF'
+            #!/bin/sh
+            set -eu
+
+            cd "$DEPLOY_PATH"
+
+            if [ "$USE_DOCKER_COMPOSE_PLUGIN" = "1" ]; then
+              if [ "$PULL_POLICY" = "never" ]; then
+                docker compose -f "$COMPOSE_FILE" up -d --remove-orphans --pull never
+              else
+                docker compose -f "$COMPOSE_FILE" up -d --remove-orphans --pull "$PULL_POLICY"
+              fi
+            else
+              if [ "$PULL_POLICY" = "always" ]; then
+                docker-compose -f "$COMPOSE_FILE" pull
+              fi
+              docker-compose -f "$COMPOSE_FILE" up -d --remove-orphans
+            fi
+
             docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
+            EOF
+            if [ "$DEPLOY_ASYNC" = "true" ]; then
+              DEPLOY_LOG_FILE="$DEPLOY_PATH/deploy.log"
+              nohup sh "$DEPLOY_RUN_SCRIPT" > "$DEPLOY_LOG_FILE" 2>&1 < /dev/null &
+              echo "Deployment started in background. PID=$!"
+              echo "Deploy log: $DEPLOY_LOG_FILE"
+              sleep 2
+              tail -n 30 "$DEPLOY_LOG_FILE" || true
+              exit 0
+            fi
+
+            sh "$DEPLOY_RUN_SCRIPT"
