@@ -13,6 +13,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
@@ -20,6 +21,7 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 50m
           script_stop: true
           script: |
             set -eu
@@ -63,8 +65,7 @@ jobs:
             git pull origin "$BRANCH" --ff-only
 
             if docker compose version >/dev/null 2>&1; then
-              docker compose -f "$COMPOSE_FILE" pull
-              docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
+              docker compose -f "$COMPOSE_FILE" up -d --remove-orphans --pull always
             elif command -v docker-compose >/dev/null 2>&1; then
               docker-compose -f "$COMPOSE_FILE" pull
               docker-compose -f "$COMPOSE_FILE" up -d --remove-orphans
