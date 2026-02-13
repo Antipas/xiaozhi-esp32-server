@@ -22,7 +22,7 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           command_timeout: 110m
-          script_stop: true
+          script_stop: false
           script: |
             set -eux
 
