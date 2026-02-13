@@ -72,6 +72,38 @@ jobs:
             fi
             echo "Async deploy: $DEPLOY_ASYNC"
 
+            # Ensure repository permissions are writable for the current deploy user.
+            if [ ! -d ".git" ]; then
+              echo "No .git directory found under DEPLOY_PATH: $DEPLOY_PATH"
+              exit 1
+            fi
+            rm -f .git/index.lock .git/shallow.lock .git/packed-refs.lock || true
+
+            if [ ! -w ".git/objects" ]; then
+              echo ".git/objects is not writable by current user: $(whoami)"
+              if command -v sudo >/dev/null 2>&1; then
+                if sudo -n true >/dev/null 2>&1; then
+                  sudo chown -R "$(whoami)":"$(id -gn)" .git
+                  sudo find .git -type d -exec chmod u+rwx {} \;
+                  sudo find .git -type f -exec chmod u+rw {} \;
+                else
+                  echo "sudo requires password; cannot auto-fix .git permissions."
+                fi
+              else
+                echo "sudo not found; cannot auto-fix .git permissions."
+              fi
+            fi
+
+            if [ ! -w ".git/objects" ]; then
+              echo "FATAL: .git/objects is still not writable after fix attempt."
+              echo "Please run on server:"
+              echo "  sudo chown -R $(whoami):$(id -gn) \"$DEPLOY_PATH/.git\""
+              echo "  sudo find \"$DEPLOY_PATH/.git\" -type d -exec chmod u+rwx {} \\;"
+              echo "  sudo find \"$DEPLOY_PATH/.git\" -type f -exec chmod u+rw {} \\;"
+              exit 1
+            fi
+
+            git config --global --add safe.directory "$DEPLOY_PATH" || true
             git fetch --all --prune
             git checkout "$BRANCH"
             git pull origin "$BRANCH" --ff-only
