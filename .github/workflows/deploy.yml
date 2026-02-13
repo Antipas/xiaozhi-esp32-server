@@ -84,6 +84,22 @@ jobs:
               return 0
             }
 
+            has_passwordless_sudo() {
+              command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1
+            }
+
+            repair_git_permissions() {
+              if has_passwordless_sudo; then
+                sudo chown -R "$(whoami)":"$(id -gn)" .git || true
+                sudo find .git -type d -exec chmod u+rwx {} \; || true
+                sudo find .git -type f -exec chmod u+rw {} \; || true
+              else
+                find .git -type d -exec chmod u+rwx {} \; || true
+                find .git -type f -exec chmod u+rw {} \; || true
+              fi
+              rm -f .git/index.lock .git/shallow.lock .git/packed-refs.lock || true
+            }
+
             # Ensure repository permissions are writable for the current deploy user.
             if [ ! -d ".git" ]; then
               echo "No .git directory found under DEPLOY_PATH: $DEPLOY_PATH"
@@ -94,12 +110,9 @@ jobs:
             USE_SUDO_GIT="false"
             if ! check_git_objects_writable; then
               echo ".git/objects is not writable by current user: $(whoami)"
-              if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+              if has_passwordless_sudo; then
                 USE_SUDO_GIT="true"
-                sudo chown -R "$(whoami)":"$(id -gn)" .git || true
-                sudo find .git -type d -exec chmod u+rwx {} \; || true
-                sudo find .git -type f -exec chmod u+rw {} \; || true
-                rm -f .git/index.lock .git/shallow.lock .git/packed-refs.lock || true
+                repair_git_permissions
               else
                 echo "sudo not available without password; cannot auto-fix .git permissions."
               fi
@@ -123,7 +136,25 @@ jobs:
             }
 
             echo "Running git fetch..."
-            run_git fetch --all --prune
+            set +e
+            FETCH_OUTPUT="$(run_git fetch --all --prune 2>&1)"
+            FETCH_CODE=$?
+            set -e
+            if [ "$FETCH_CODE" -ne 0 ]; then
+              echo "git fetch failed (first attempt):"
+              echo "$FETCH_OUTPUT"
+              echo "Trying git permission repair and retry..."
+              repair_git_permissions
+              set +e
+              FETCH_OUTPUT="$(run_git fetch --all --prune 2>&1)"
+              FETCH_CODE=$?
+              set -e
+              if [ "$FETCH_CODE" -ne 0 ]; then
+                echo "git fetch failed (second attempt):"
+                echo "$FETCH_OUTPUT"
+                exit 1
+              fi
+            fi
             echo "Running git checkout..."
             run_git checkout "$BRANCH"
             echo "Running git pull..."
