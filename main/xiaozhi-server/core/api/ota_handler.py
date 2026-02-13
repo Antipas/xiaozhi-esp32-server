@@ -3,11 +3,13 @@ import time
 import base64
 import hashlib
 import hmac
+import ipaddress
 import os
 import re
 import glob
 from typing import Dict, List, Tuple
 from aiohttp import web
+from urllib.parse import urlparse
 
 from core.auth import AuthManager
 from core.utils.util import get_local_ip, get_vision_url
@@ -122,10 +124,91 @@ class OTAHandler(BaseHandler):
             self.logger.bind(tag=TAG).error(f"生成MQTT密码签名失败: {e}")
             return ""
 
-    def _get_websocket_url(self, local_ip: str, port: int) -> str:
+    def _extract_header_value(self, value: str) -> str:
+        if not value:
+            return ""
+        return value.split(",")[0].strip()
+
+    def _extract_host(self, host_value: str) -> str:
+        if not host_value:
+            return ""
+        host_value = host_value.strip()
+        if "://" in host_value:
+            host_value = host_value.split("://", 1)[1]
+        host_value = host_value.split("/", 1)[0].strip()
+        if not host_value:
+            return ""
+        # IPv6 host header format: [::1]:8000
+        if host_value.startswith("["):
+            end = host_value.find("]")
+            if end > 0:
+                return host_value[1:end]
+        # IPv4/domain with port
+        if host_value.count(":") == 1:
+            return host_value.split(":", 1)[0].strip()
+        return host_value
+
+    def _format_host_for_url(self, host: str) -> str:
+        if ":" in host and not host.startswith("["):
+            return f"[{host}]"
+        return host
+
+    def _is_private_host(self, host: str) -> bool:
+        if not host:
+            return True
+        normalized = host.strip().lower()
+        if (
+            normalized == "localhost"
+            or normalized == "::1"
+            or normalized.endswith(".local")
+        ):
+            return True
+        try:
+            ip = ipaddress.ip_address(normalized)
+            return (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_reserved
+                or ip.is_multicast
+            )
+        except ValueError:
+            return False
+
+    def _is_private_websocket_url(self, ws_url: str) -> bool:
+        try:
+            parsed = urlparse(ws_url)
+            if parsed.scheme not in ("ws", "wss"):
+                return True
+            return self._is_private_host(parsed.hostname or "")
+        except Exception:
+            return True
+
+    def _build_websocket_url_from_request(self, request: web.Request, port: int) -> str:
+        forwarded_host = self._extract_header_value(
+            request.headers.get("x-forwarded-host", "")
+        )
+        host_header = forwarded_host or request.headers.get("host", "")
+        host = self._extract_host(host_header) or request.url.host
+        if not host:
+            return ""
+
+        forwarded_proto = self._extract_header_value(
+            request.headers.get("x-forwarded-proto", "")
+        )
+        proto = (forwarded_proto or request.scheme or "http").lower()
+        ws_scheme = "wss" if proto in ("https", "wss") else "ws"
+        host_for_url = self._format_host_for_url(host)
+
+        if (ws_scheme == "ws" and port == 80) or (ws_scheme == "wss" and port == 443):
+            return f"{ws_scheme}://{host_for_url}/xiaozhi/v1/"
+        return f"{ws_scheme}://{host_for_url}:{port}/xiaozhi/v1/"
+
+    def _get_websocket_url(self, request: web.Request, local_ip: str, port: int) -> str:
         """获取websocket地址
 
         Args:
+            request: 当前请求对象
             local_ip: 本地IP地址
             port: 端口号
 
@@ -135,10 +218,19 @@ class OTAHandler(BaseHandler):
         server_config = self.config["server"]
         websocket_config = server_config.get("websocket", "")
 
-        if "你的" not in websocket_config:
+        request_ws_url = self._build_websocket_url_from_request(request, port)
+
+        if websocket_config and "你的" not in websocket_config:
+            if self._is_private_websocket_url(websocket_config) and request_ws_url:
+                self.logger.bind(tag=TAG).warning(
+                    f"server.websocket 是内网地址({websocket_config})，改用请求地址推导: {request_ws_url}"
+                )
+                return request_ws_url
             return websocket_config
-        else:
-            return f"ws://{local_ip}:{port}/xiaozhi/v1/"
+
+        if request_ws_url:
+            return request_ws_url
+        return f"ws://{local_ip}:{port}/xiaozhi/v1/"
 
     async def handle_post(self, request):
         """处理 OTA POST 请求
@@ -290,7 +382,7 @@ class OTAHandler(BaseHandler):
                         token = self.auth.generate_token(client_id, device_id)
                 # NOTE: use websocket_port here
                 return_json["websocket"] = {
-                    "url": self._get_websocket_url(local_ip, websocket_port),
+                    "url": self._get_websocket_url(request, local_ip, websocket_port),
                     "token": token,
                 }
                 self.logger.bind(tag=TAG).info(
@@ -359,7 +451,7 @@ class OTAHandler(BaseHandler):
             local_ip = get_local_ip()
             # use websocket port for websocket URL
             websocket_port = int(server_config.get("port", 8000))
-            websocket_url = self._get_websocket_url(local_ip, websocket_port)
+            websocket_url = self._get_websocket_url(request, local_ip, websocket_port)
             message = f"OTA接口运行正常，向设备发送的websocket地址是：{websocket_url}"
             response = web.Response(text=message, content_type="text/plain")
         except Exception as e:
