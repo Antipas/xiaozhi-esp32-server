@@ -326,7 +326,8 @@ class OTAHandler(BaseHandler):
             # existing mqtt/websocket logic (unchanged)
             mqtt_gateway_endpoint = server_config.get("mqtt_gateway")
 
-            if mqtt_gateway_endpoint:  # 如果配置了非空字符串
+            # 检查是否为有效的 MQTT 配置（排除 null 字符串）
+            if mqtt_gateway_endpoint and mqtt_gateway_endpoint not in ("null", "None", ""):
                 # 尝试从请求数据中获取设备型号（已解析 above）
                 try:
                     group_id = f"GID_{device_model}".replace(":", "_").replace(" ", "_")
