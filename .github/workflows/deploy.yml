@@ -24,13 +24,16 @@ jobs:
           command_timeout: 110m
           script_stop: true
           script: |
-            set -eu
+            set -eux
 
             DEPLOY_PATH="${{ secrets.DEPLOY_PATH }}"
             COMPOSE_FILE="${{ secrets.DOCKER_COMPOSE_FILE }}"
             PULL_POLICY="${{ secrets.DEPLOY_PULL_POLICY }}"
             DEPLOY_ASYNC="${{ secrets.DEPLOY_ASYNC }}"
             BRANCH="${{ github.ref_name }}"
+            echo "Deploy user: $(whoami)"
+            echo "Deploy path: $DEPLOY_PATH"
+            echo "Branch: $BRANCH"
 
             if [ -z "$DEPLOY_PATH" ]; then
               echo "DEPLOY_PATH is empty."
@@ -120,9 +123,13 @@ jobs:
             }
 
             run_git config --global --add safe.directory "$DEPLOY_PATH" || true
+            echo "Running git fetch..."
             run_git fetch --all --prune
+            echo "Running git checkout..."
             run_git checkout "$BRANCH"
+            echo "Running git pull..."
             run_git pull origin "$BRANCH" --ff-only
+            echo "Git sync completed."
 
             if docker compose version >/dev/null 2>&1; then
               USE_DOCKER_COMPOSE_PLUGIN="1"
