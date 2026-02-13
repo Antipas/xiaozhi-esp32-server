@@ -72,6 +72,15 @@ jobs:
             fi
             echo "Async deploy: $DEPLOY_ASYNC"
 
+            check_git_objects_writable() {
+              [ -d ".git/objects" ] || return 1
+              [ -w ".git/objects" ] || return 1
+              test_dir=".git/objects/_perm_test_$$"
+              mkdir "$test_dir" 2>/dev/null || return 1
+              rmdir "$test_dir" 2>/dev/null || true
+              return 0
+            }
+
             # Ensure repository permissions are writable for the current deploy user.
             if [ ! -d ".git" ]; then
               echo "No .git directory found under DEPLOY_PATH: $DEPLOY_PATH"
@@ -79,34 +88,41 @@ jobs:
             fi
             rm -f .git/index.lock .git/shallow.lock .git/packed-refs.lock || true
 
-            if [ ! -w ".git/objects" ]; then
+            USE_SUDO_GIT="false"
+            if ! check_git_objects_writable; then
               echo ".git/objects is not writable by current user: $(whoami)"
-              if command -v sudo >/dev/null 2>&1; then
-                if sudo -n true >/dev/null 2>&1; then
-                  sudo chown -R "$(whoami)":"$(id -gn)" .git
-                  sudo find .git -type d -exec chmod u+rwx {} \;
-                  sudo find .git -type f -exec chmod u+rw {} \;
-                else
-                  echo "sudo requires password; cannot auto-fix .git permissions."
-                fi
+              if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+                USE_SUDO_GIT="true"
+                sudo chown -R "$(whoami)":"$(id -gn)" .git || true
+                sudo find .git -type d -exec chmod u+rwx {} \; || true
+                sudo find .git -type f -exec chmod u+rw {} \; || true
+                rm -f .git/index.lock .git/shallow.lock .git/packed-refs.lock || true
               else
-                echo "sudo not found; cannot auto-fix .git permissions."
+                echo "sudo not available without password; cannot auto-fix .git permissions."
               fi
             fi
 
-            if [ ! -w ".git/objects" ]; then
-              echo "FATAL: .git/objects is still not writable after fix attempt."
-              echo "Please run on server:"
+            if ! check_git_objects_writable && [ "$USE_SUDO_GIT" != "true" ]; then
+              echo "FATAL: .git/objects is still not writable and sudo git is unavailable."
+              echo "Please run on server once:"
               echo "  sudo chown -R $(whoami):$(id -gn) \"$DEPLOY_PATH/.git\""
               echo "  sudo find \"$DEPLOY_PATH/.git\" -type d -exec chmod u+rwx {} \\;"
               echo "  sudo find \"$DEPLOY_PATH/.git\" -type f -exec chmod u+rw {} \\;"
               exit 1
             fi
 
-            git config --global --add safe.directory "$DEPLOY_PATH" || true
-            git fetch --all --prune
-            git checkout "$BRANCH"
-            git pull origin "$BRANCH" --ff-only
+            run_git() {
+              if [ "$USE_SUDO_GIT" = "true" ]; then
+                sudo -E git "$@"
+              else
+                git "$@"
+              fi
+            }
+
+            run_git config --global --add safe.directory "$DEPLOY_PATH" || true
+            run_git fetch --all --prune
+            run_git checkout "$BRANCH"
+            run_git pull origin "$BRANCH" --ff-only
 
             if docker compose version >/dev/null 2>&1; then
               USE_DOCKER_COMPOSE_PLUGIN="1"
