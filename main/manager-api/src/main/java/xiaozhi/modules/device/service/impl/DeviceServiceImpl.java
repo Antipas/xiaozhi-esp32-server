@@ -4,6 +4,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.net.URI;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Date;
 import java.util.HashMap;
@@ -219,8 +221,7 @@ public class DeviceServiceImpl extends BaseServiceImpl<DeviceDao, DeviceEntity> 
 
         // 添加WebSocket配置
         DeviceReportRespDTO.Websocket websocket = new DeviceReportRespDTO.Websocket();
-        // 从系统参数获取WebSocket URL，如果未配置则使用默认值
-        String wsUrl = sysParamsService.getValue(Constant.SERVER_WEBSOCKET, true);
+        String wsUrlConfig = sysParamsService.getValue(Constant.SERVER_WEBSOCKET, true);
 
         // 检查是否启用认证并生成token
         String authEnabled = sysParamsService.getValue(Constant.SERVER_AUTH_ENABLED, true);
@@ -237,20 +238,12 @@ public class DeviceServiceImpl extends BaseServiceImpl<DeviceDao, DeviceEntity> 
             websocket.setToken("");
         }
 
-        if (StringUtils.isBlank(wsUrl) || wsUrl.equals("null")) {
+        String wsUrl = resolveWebsocketUrl(wsUrlConfig);
+        if (StringUtils.isBlank(wsUrl)) {
             log.error("WebSocket地址未配置，请登录智控台，在参数管理找到【server.websocket】配置");
             wsUrl = "ws://xiaozhi.server.com:8000/xiaozhi/v1/";
-            websocket.setUrl(wsUrl);
-        } else {
-            String[] wsUrls = wsUrl.split("\\;");
-            if (wsUrls.length > 0) {
-                // 随机选择一个WebSocket URL
-                websocket.setUrl(wsUrls[RandomUtil.randomInt(0, wsUrls.length)]);
-            } else {
-                log.error("WebSocket地址未配置，请登录智控台，在参数管理找到【server.websocket】配置");
-                websocket.setUrl("ws://xiaozhi.server.com:8000/xiaozhi/v1/");
-            }
         }
+        websocket.setUrl(wsUrl);
 
         response.setWebsocket(websocket);
 
@@ -485,6 +478,118 @@ public class DeviceServiceImpl extends BaseServiceImpl<DeviceDao, DeviceEntity> 
         firmware.setVersion(ota == null ? currentVersion : ota.getVersion());
         firmware.setUrl(downloadUrl == null ? Constant.INVALID_FIRMWARE_URL : downloadUrl);
         return firmware;
+    }
+
+    private String resolveWebsocketUrl(String wsUrlConfig) {
+        String selectedWsUrl = selectWebsocketUrl(wsUrlConfig);
+        if (StringUtils.isNotBlank(selectedWsUrl) && !isPrivateWebsocketUrl(selectedWsUrl)) {
+            return selectedWsUrl;
+        }
+
+        String fallbackWsUrl = buildWebsocketUrlFromOta();
+        if (StringUtils.isNotBlank(fallbackWsUrl)) {
+            if (StringUtils.isBlank(selectedWsUrl)) {
+                log.warn("WebSocket地址为空，使用server.ota推导地址: {}", fallbackWsUrl);
+            } else {
+                log.warn("WebSocket地址疑似内网地址({})，使用server.ota推导地址: {}", selectedWsUrl, fallbackWsUrl);
+            }
+            return fallbackWsUrl;
+        }
+
+        return selectedWsUrl;
+    }
+
+    private String selectWebsocketUrl(String wsUrlConfig) {
+        if (StringUtils.isBlank(wsUrlConfig) || "null".equalsIgnoreCase(wsUrlConfig.trim())) {
+            return null;
+        }
+
+        List<String> wsUrls = Arrays.stream(wsUrlConfig.split(";"))
+                .map(String::trim)
+                .filter(StringUtils::isNotBlank)
+                .collect(Collectors.toList());
+        if (wsUrls.isEmpty()) {
+            return null;
+        }
+
+        List<String> publicWsUrls = wsUrls.stream()
+                .filter(url -> !isPrivateWebsocketUrl(url))
+                .collect(Collectors.toList());
+        List<String> candidates = publicWsUrls.isEmpty() ? wsUrls : publicWsUrls;
+        return candidates.get(RandomUtil.randomInt(candidates.size()));
+    }
+
+    private String buildWebsocketUrlFromOta() {
+        String otaUrl = sysParamsService.getValue(Constant.SERVER_OTA, true);
+        if (StringUtils.isBlank(otaUrl) || "null".equalsIgnoreCase(otaUrl.trim())) {
+            return null;
+        }
+
+        try {
+            URI otaUri = new URI(otaUrl.trim());
+            String host = otaUri.getHost();
+            if (StringUtils.isBlank(host)) {
+                return null;
+            }
+
+            String otaScheme = StringUtils.defaultString(otaUri.getScheme()).toLowerCase();
+            String wsScheme = "https".equals(otaScheme) ? "wss" : "ws";
+            int otaPort = otaUri.getPort();
+            int wsPort = otaPort;
+            if (otaPort == 8002 || otaPort == 8003) {
+                wsPort = 8000;
+            }
+
+            StringBuilder builder = new StringBuilder();
+            builder.append(wsScheme).append("://").append(host);
+            if (wsPort > 0 && wsPort != 80 && wsPort != 443) {
+                builder.append(":").append(wsPort);
+            }
+            builder.append("/xiaozhi/v1/");
+            return builder.toString();
+        } catch (Exception e) {
+            log.warn("根据server.ota推导WebSocket地址失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private boolean isPrivateWebsocketUrl(String wsUrl) {
+        if (StringUtils.isBlank(wsUrl)) {
+            return true;
+        }
+        try {
+            URI uri = new URI(wsUrl.trim());
+            String host = uri.getHost();
+            if (StringUtils.isBlank(host)) {
+                return true;
+            }
+
+            String normalizedHost = host.toLowerCase();
+            if ("localhost".equals(normalizedHost)
+                    || "127.0.0.1".equals(normalizedHost)
+                    || "::1".equals(normalizedHost)
+                    || normalizedHost.endsWith(".local")
+                    || !normalizedHost.contains(".")) {
+                return true;
+            }
+
+            if (normalizedHost.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) {
+                String[] parts = normalizedHost.split("\\.");
+                int a = Integer.parseInt(parts[0]);
+                int b = Integer.parseInt(parts[1]);
+                if (a == 10
+                        || a == 127
+                        || (a == 169 && b == 254)
+                        || (a == 172 && b >= 16 && b <= 31)
+                        || (a == 192 && b == 168)
+                        || (a == 100 && b >= 64 && b <= 127)) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (Exception e) {
+            return true;
+        }
     }
 
     /**
