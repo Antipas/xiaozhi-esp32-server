@@ -116,13 +116,12 @@ jobs:
 
             run_git() {
               if [ "$USE_SUDO_GIT" = "true" ]; then
-                sudo -E git "$@"
+                sudo -E git -c safe.directory="$DEPLOY_PATH" "$@"
               else
-                git "$@"
+                git -c safe.directory="$DEPLOY_PATH" "$@"
               fi
             }
 
-            run_git config --global --add safe.directory "$DEPLOY_PATH" || true
             echo "Running git fetch..."
             run_git fetch --all --prune
             echo "Running git checkout..."
