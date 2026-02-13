@@ -128,11 +128,14 @@ jobs:
             fi
 
             run_git() {
-              if [ "$USE_SUDO_GIT" = "true" ]; then
-                sudo -E git -c safe.directory="$DEPLOY_PATH" "$@"
-              else
-                git -c safe.directory="$DEPLOY_PATH" "$@"
-              fi
+              case "$USE_SUDO_GIT" in
+                true)
+                  sudo -E git -c safe.directory="$DEPLOY_PATH" "$@"
+                  ;;
+                *)
+                  git -c safe.directory="$DEPLOY_PATH" "$@"
+                  ;;
+              esac
             }
 
             echo "Running git fetch..."
